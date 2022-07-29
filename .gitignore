@@ -1,0 +1,4 @@
+.terraform*
+*.tfstate*
+coder_deployment.json
+.coder
