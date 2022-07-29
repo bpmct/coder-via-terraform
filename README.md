@@ -18,5 +18,6 @@ Set up Coder with Terraform.
   - [ ] GCP
   - [ ] Dedicated machine with Docker
   - [ ] Kubernetes
+- [ ] Release Coder on Docker Hub
 - [ ] Create multiple users, templates, and workspaces
 - [ ] Maybe: Support Terraform deployments as first-class feature in Coder's Terraform provider: [coder/coder#2291](https://github.com/coder/coder/issues/2291)
