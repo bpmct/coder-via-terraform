@@ -68,16 +68,40 @@ provider "kubernetes" {
   cluster_ca_certificate = base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate)
 }
 
-resource "helm_release" "coder" {
+resource "helm_release" "coder_initial" {
+  name  = "coder"
+  chart = "https://github.com/coder/coder/releases/download/v0.10.2/coder_helm_0.10.2.tgz"
+}
+
+data "kubernetes_service" "coder" {
+  metadata {
+    name = "coder"
+  }
+  depends_on = [
+    helm_release.coder_initial
+  ]
+}
+
+resource "helm_release" "coder_configured" {
   name  = "coder"
   chart = "https://github.com/coder/coder/releases/download/v0.10.2/coder_helm_0.10.2.tgz"
 
+  # We need the LoadBalancer IP from the initial deploy :(
+  depends_on = [
+    helm_release.coder_initial
+  ]
   values = [<<EOF
 coder:
   replicaCount: 3
   image:
     tag: "v0.10.2"
   env:
+    - name: CODER_ACCESS_URL
+      value: "http://${data.kubernetes_service.coder.status.0.load_balancer.0.ingress.0.ip}"
+    - name: CODER_WILDCARD_ACCESS_URL
+      value: "*.${data.kubernetes_service.coder.status.0.load_balancer.0.ingress.0.ip}.nip.io"
+    - name: CODER_PROMETHEUS_ENABLE
+      value: "true"
     - name: CODER_TEMPLATE_AUTOIMPORT
       value: "kubernetes"
     - name: CODER_PROMETHEUS_ENABLE
@@ -98,15 +122,6 @@ coder:
       cpu: 0.5
       memory: 512M
 EOF
-  ]
-}
-
-data "kubernetes_service" "coder" {
-  metadata {
-    name = "coder"
-  }
-  depends_on = [
-    helm_release.coder
   ]
 }
 
