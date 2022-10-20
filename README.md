@@ -1,6 +1,6 @@
 # coder-via-terraform
 
-Set up Coder with Terraform.
+My (extremely basic) Terraform to set up Coder deployments. This is not ready for production, but can be used as a reference, for load testing, demos, etc.
 
 ## Features
 
