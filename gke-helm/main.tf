@@ -74,9 +74,29 @@ resource "helm_release" "coder" {
 
   values = [<<EOF
 coder:
+  replicaCount: 3
   image:
-    tag: latest
+    tag: "v0.10.2"
   env:
+    - name: CODER_TEMPLATE_AUTOIMPORT
+      value: "kubernetes"
+    - name: CODER_PROMETHEUS_ENABLE
+      value: "true"
+    - name: CODER_PROMETHEUS_ADDRESS
+      value: "127.0.0.1:2112" # default value, for visibility
+    - name: CODER_PROVISIONER_DAEMONS
+      value: "5"
+    - name: CODER_EXPERIMENTAL
+      value: "true"
+  serviceAccount:
+    workspacePerms: true
+  resources:
+    limits:
+      cpu: 2
+      memory: 4G
+    requests:
+      cpu: 0.5
+      memory: 512M
 EOF
   ]
 }
