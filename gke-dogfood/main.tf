@@ -36,14 +36,14 @@ variable "provisioner_daemons_per_replica" {
 module "coder_cluster" {
   source = "./gke-helm"
 
-  gcp_credentials = "/home/coder/ben-credentials.json"
-  gcp_project_id  = "coder-devrel"
-  email           = "me@bpmct.net"
-  dns_zone_name   = "environments"
-  root_domain     = "environments.bpmct.net"
-  node_size       = var.node_size
-  cluster_name    = "${data.coder_workspace.me.owner}-${data.coder_workspace.me.name}"
-  replicas = var.replicas
+  gcp_credentials                 = "/home/coder/ben-credentials.json"
+  gcp_project_id                  = "coder-devrel"
+  email                           = "me@bpmct.net"
+  dns_zone_name                   = "environments"
+  root_domain                     = "environments.bpmct.net"
+  node_size                       = var.node_size
+  cluster_name                    = "${data.coder_workspace.me.name}${data.coder_workspace.me.owner}"
+  replicas                        = var.replicas
   provisioner_daemons_per_replica = var.provisioner_daemons_per_replica
 }
 
@@ -164,6 +164,10 @@ resource "coder_metadata" "info" {
   item {
     key   = "Estimated hourly cost"
     value = data.external.cost_estimate.result.hourly_cost
+  }
+  item {
+    key   = "GCP Console URL"
+    value = "https://console.cloud.google.com/kubernetes/clusters/details/us-central1-a/${data.coder_workspace.me.name}"
   }
 }
 
