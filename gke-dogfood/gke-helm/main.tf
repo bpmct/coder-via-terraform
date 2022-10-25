@@ -33,6 +33,7 @@ variable "root_domain" {
 variable "cluster_name" {
 }
 variable "status" {
+  default = 1
 }
 variable "replicas" {
   default = "1"
