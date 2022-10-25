@@ -33,8 +33,11 @@ variable "provisioner_daemons_per_replica" {
   default = "25"
 }
 
+
 module "coder_cluster" {
   source = "./gke-helm"
+  status = data.coder_workspace.me.start_count
+
 
   gcp_credentials                 = "/home/coder/ben-credentials.json"
   gcp_project_id                  = "coder-devrel"
@@ -48,11 +51,11 @@ module "coder_cluster" {
 }
 
 provider "kubernetes" {
-  host                   = module.coder_cluster.cluster_info.host
-  token                  = module.coder_cluster.cluster_info.token
-  client_key             = module.coder_cluster.cluster_info.client_key
-  client_certificate     = module.coder_cluster.cluster_info.client_certificate
-  cluster_ca_certificate = module.coder_cluster.cluster_info.cluster_ca_certificate
+  host                   = try(module.coder_cluster.cluster_info.host, "")
+  token                  = try(module.coder_cluster.cluster_info.token, "")
+  client_key             = try(module.coder_cluster.cluster_info.client_key, "")
+  client_certificate     = try(module.coder_cluster.cluster_info.client_certificate, "")
+  cluster_ca_certificate = try(module.coder_cluster.cluster_info.cluster_ca_certificate, "")
 }
 
 resource "coder_agent" "dev" {
@@ -85,6 +88,7 @@ resource "coder_app" "code-server" {
 }
 
 resource "kubernetes_service_account" "dogfood" {
+  count      = data.coder_workspace.me.start_count
   depends_on = [module.coder_cluster]
 
   metadata {
@@ -92,6 +96,7 @@ resource "kubernetes_service_account" "dogfood" {
   }
 }
 resource "kubernetes_cluster_role_binding" "dogfood" {
+  count      = data.coder_workspace.me.start_count
   depends_on = [module.coder_cluster]
   metadata {
     name = "dogfood-workspace"
@@ -103,7 +108,7 @@ resource "kubernetes_cluster_role_binding" "dogfood" {
   }
   subject {
     kind = "ServiceAccount"
-    name = kubernetes_service_account.dogfood.metadata[0].name
+    name = kubernetes_service_account.dogfood[0].metadata[0].name
   }
 }
 
@@ -117,7 +122,7 @@ resource "kubernetes_pod" "main" {
     name = "dogfood-workspace"
   }
   spec {
-    service_account_name = kubernetes_service_account.dogfood.metadata[0].name
+    service_account_name = kubernetes_service_account.dogfood[0].metadata[0].name
     security_context {
       run_as_user = 1000
       fs_group    = 1000

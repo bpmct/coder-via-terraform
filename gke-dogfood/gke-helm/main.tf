@@ -32,6 +32,8 @@ variable "root_domain" {
 }
 variable "cluster_name" {
 }
+variable "status" {
+}
 variable "replicas" {
   default = "1"
 }
@@ -54,12 +56,14 @@ provider "google-beta" {
 }
 
 resource "google_service_account" "sa" {
+  count        = var.status
   provider     = google-beta
   project      = var.gcp_project_id
   account_id   = "coder-${var.cluster_name}"
   display_name = "Coder ${var.cluster_name}"
 }
 resource "google_project_iam_custom_role" "dns" {
+  count    = var.status
   provider = google-beta
   project  = var.gcp_project_id
   role_id  = "${var.cluster_name}DnsRole"
@@ -75,20 +79,23 @@ resource "google_project_iam_custom_role" "dns" {
   ]
 }
 resource "google_project_iam_binding" "dns" {
+  count    = var.status
   provider = google-beta
   project  = var.gcp_project_id
-  role     = "projects/${var.gcp_project_id}/roles/${google_project_iam_custom_role.dns.role_id}"
+  role     = "projects/${var.gcp_project_id}/roles/${google_project_iam_custom_role.dns[0].role_id}"
   members = [
-    "serviceAccount:${google_service_account.sa.email}",
+    "serviceAccount:${google_service_account.sa[0].email}",
   ]
 }
 
 resource "google_service_account_key" "key" {
+  count              = var.status
   provider           = google-beta
-  service_account_id = google_service_account.sa.name
+  service_account_id = google_service_account.sa[0].name
 }
 
 resource "google_container_cluster" "coder" {
+  count    = var.status
   provider = google-beta
   name     = var.cluster_name
   location = "us-central1-a"
@@ -106,10 +113,11 @@ resource "google_container_cluster" "coder" {
 }
 
 resource "google_container_node_pool" "coder_control_plane" {
+  count      = var.status
   provider   = google-beta
   name       = "coder-control-plane"
   location   = "us-central1-a"
-  cluster    = google_container_cluster.coder.name
+  cluster    = google_container_cluster.coder[0].name
   node_count = 1
 
   node_config {
@@ -117,7 +125,7 @@ resource "google_container_node_pool" "coder_control_plane" {
     machine_type = var.node_size
 
     # Google recommends custom service accounts that have cloud-platform scope and permissions granted via IAM Roles.
-    service_account = google_service_account.sa.email
+    service_account = google_service_account.sa[0].email
     oauth_scopes = [
       "https://www.googleapis.com/auth/cloud-platform"
     ]
@@ -129,32 +137,33 @@ data "google_client_config" "current" {}
 provider "helm" {
   alias = "gcp_cluster"
   kubernetes {
-    host                   = google_container_cluster.coder.endpoint
+    host                   = try(google_container_cluster.coder[0].endpoint, "")
     token                  = data.google_client_config.current.access_token
-    client_key             = base64decode(google_container_cluster.coder.master_auth[0].client_key)
-    client_certificate     = base64decode(google_container_cluster.coder.master_auth[0].client_certificate)
-    cluster_ca_certificate = base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate)
+    client_key             = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_key), "")
+    client_certificate     = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_certificate), "")
+    cluster_ca_certificate = try(base64decode(google_container_cluster.coder[0].master_auth[0].cluster_ca_certificate), "")
   }
 }
 provider "kubernetes" {
   alias                  = "gcp_cluster"
-  host                   = "https://${google_container_cluster.coder.endpoint}"
+  host                   = try("https://${google_container_cluster.coder[0].endpoint}", "")
   token                  = data.google_client_config.current.access_token
-  client_key             = base64decode(google_container_cluster.coder.master_auth[0].client_key)
-  client_certificate     = base64decode(google_container_cluster.coder.master_auth[0].client_certificate)
-  cluster_ca_certificate = base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate)
+  client_key             = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_key), "")
+  client_certificate     = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_certificate), "")
+  cluster_ca_certificate = try(base64decode(google_container_cluster.coder[0].master_auth[0].cluster_ca_certificate), "")
 }
 provider "kubectl" {
   alias                  = "gcp_cluster"
-  host                   = "https://${google_container_cluster.coder.endpoint}"
+  host                   = try("https://${google_container_cluster.coder[0].endpoint}", "")
   token                  = data.google_client_config.current.access_token
-  client_key             = base64decode(google_container_cluster.coder.master_auth[0].client_key)
-  client_certificate     = base64decode(google_container_cluster.coder.master_auth[0].client_certificate)
-  cluster_ca_certificate = base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate)
+  client_key             = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_key), "")
+  client_certificate     = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_certificate), "")
+  cluster_ca_certificate = try(base64decode(google_container_cluster.coder[0].master_auth[0].cluster_ca_certificate), "")
   load_config_file       = false
 }
 
 resource "kubernetes_namespace" "cert-manager" {
+  count = var.status
   metadata {
     name = "cert-manager"
   }
@@ -163,18 +172,20 @@ resource "kubernetes_namespace" "cert-manager" {
   ]
 }
 resource "kubernetes_secret" "clouddns-serviceaccount" {
+  count    = var.status
   provider = kubernetes.gcp_cluster
   metadata {
     name      = "clouddns-serviceaccount"
     namespace = "cert-manager"
   }
   data = {
-    private_key = base64decode(google_service_account_key.key.private_key)
+    private_key = base64decode(google_service_account_key.key[0].private_key)
   }
   type       = "Opaque"
   depends_on = [kubernetes_namespace.cert-manager]
 }
 resource "helm_release" "cert-manager" {
+  count    = var.status
   provider = helm.gcp_cluster
   depends_on = [
     kubernetes_namespace.cert-manager
@@ -189,6 +200,7 @@ resource "helm_release" "cert-manager" {
   }
 }
 resource "helm_release" "postgres" {
+  count      = var.status
   provider   = helm.gcp_cluster
   name       = "coder-db"
   repository = "https://charts.bitnami.com/bitnami"
@@ -217,6 +229,7 @@ resource "helm_release" "postgres" {
 }
 
 resource "time_sleep" "wait_for_certmanager" {
+  count = var.status
   depends_on = [
     helm_release.cert-manager
   ]
@@ -224,6 +237,7 @@ resource "time_sleep" "wait_for_certmanager" {
 }
 
 resource "kubectl_manifest" "cluster_issuer" {
+  count    = var.status
   provider = kubectl.gcp_cluster
   depends_on = [
     time_sleep.wait_for_certmanager,
@@ -252,6 +266,7 @@ spec:
 }
 
 resource "time_sleep" "wait_for_clusterissuer" {
+  count = var.status
   depends_on = [
     kubectl_manifest.cluster_issuer,
     helm_release.postgres
@@ -260,6 +275,7 @@ resource "time_sleep" "wait_for_clusterissuer" {
 }
 
 resource "helm_release" "nginx-ingress" {
+  count      = var.status
   provider   = helm.gcp_cluster
   name       = "nginx-ingress"
   repository = "https://kubernetes.github.io/ingress-nginx"
@@ -271,6 +287,7 @@ resource "helm_release" "nginx-ingress" {
 }
 
 resource "helm_release" "coder" {
+  count    = var.status
   provider = helm.gcp_cluster
   name     = "coder"
   chart    = "https://github.com/coder/coder/releases/download/v0.10.2/coder_helm_0.10.2.tgz"
@@ -302,13 +319,6 @@ coder:
       value: "postgres://coder:coder@coder-db-postgresql.default.svc.cluster.local:5432/coder?sslmode=disable"
   serviceAccount:
     workspacePerms: true
-  resources:
-    limits:
-      cpu: 2
-      memory: 4G
-    requests:
-      cpu: 0.5
-      memory: 512M
   ingress:
     enable: true
     className: "nginx"
@@ -332,6 +342,7 @@ EOF
 }
 
 resource "time_sleep" "wait_for_ip" {
+  count = var.status
   depends_on = [
     helm_release.coder
   ]
@@ -340,6 +351,7 @@ resource "time_sleep" "wait_for_ip" {
 
 # kubernetes_ingress_v1 does not seem to work
 data "kubernetes_ingress_v1" "coder" {
+  count = var.status
   metadata {
     name      = "coder"
     namespace = "default"
@@ -351,13 +363,14 @@ data "kubernetes_ingress_v1" "coder" {
 }
 
 resource "google_dns_record_set" "cluster_subdomain" {
+  count        = var.status
   provider     = google-beta
   name         = "${var.cluster_name}.environments.bpmct.net."
   project      = var.gcp_project_id
   type         = "A"
   ttl          = 300
   managed_zone = var.dns_zone_name
-  rrdatas      = [data.kubernetes_ingress_v1.coder.status.0.load_balancer.0.ingress.0.ip]
+  rrdatas      = [data.kubernetes_ingress_v1.coder[0].status.0.load_balancer.0.ingress.0.ip]
   depends_on = [
     data.kubernetes_ingress_v1.coder
   ]
@@ -368,12 +381,12 @@ output "coder_url" {
 }
 
 output "cluster_info" {
-  value = {
-    host                   = "https://${google_container_cluster.coder.endpoint}"
+  value = try({
+    host                   = "https://${google_container_cluster.coder[0].endpoint}"
     token                  = data.google_client_config.current.access_token
-    client_key             = base64decode(google_container_cluster.coder.master_auth[0].client_key)
-    client_certificate     = base64decode(google_container_cluster.coder.master_auth[0].client_certificate)
-    cluster_ca_certificate = base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate)
-  }
+    client_key             = base64decode(google_container_cluster.coder[0].master_auth[0].client_key)
+    client_certificate     = base64decode(google_container_cluster.coder[0].master_auth[0].client_certificate)
+    cluster_ca_certificate = base64decode(google_container_cluster.coder[0].master_auth[0].cluster_ca_certificate)
+  }, {})
   sensitive = true
 }
