@@ -2,3 +2,5 @@
 *.tfstate*
 coder_deployment.json
 .coder
+terraform.tfvars
+.infracost
