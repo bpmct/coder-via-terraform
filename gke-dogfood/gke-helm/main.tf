@@ -57,14 +57,12 @@ provider "google-beta" {
 }
 
 resource "google_service_account" "sa" {
-  count        = var.status
   provider     = google-beta
   project      = var.gcp_project_id
   account_id   = "coder-${var.cluster_name}"
   display_name = "Coder ${var.cluster_name}"
 }
 resource "google_project_iam_custom_role" "dns" {
-  count    = var.status
   provider = google-beta
   project  = var.gcp_project_id
   role_id  = "${var.cluster_name}DnsRole"
@@ -80,23 +78,20 @@ resource "google_project_iam_custom_role" "dns" {
   ]
 }
 resource "google_project_iam_binding" "dns" {
-  count    = var.status
   provider = google-beta
   project  = var.gcp_project_id
-  role     = "projects/${var.gcp_project_id}/roles/${google_project_iam_custom_role.dns[0].role_id}"
+  role     = "projects/${var.gcp_project_id}/roles/${google_project_iam_custom_role.dns.role_id}"
   members = [
-    "serviceAccount:${google_service_account.sa[0].email}",
+    "serviceAccount:${google_service_account.sa.email}",
   ]
 }
 
 resource "google_service_account_key" "key" {
-  count              = var.status
   provider           = google-beta
-  service_account_id = google_service_account.sa[0].name
+  service_account_id = google_service_account.sa.name
 }
 
 resource "google_container_cluster" "coder" {
-  count    = var.status
   provider = google-beta
   name     = var.cluster_name
   location = "us-central1-a"
@@ -118,7 +113,7 @@ resource "google_container_node_pool" "coder_control_plane" {
   provider   = google-beta
   name       = "coder-control-plane"
   location   = "us-central1-a"
-  cluster    = google_container_cluster.coder[0].name
+  cluster    = google_container_cluster.coder.name
   node_count = 1
 
   node_config {
@@ -126,7 +121,7 @@ resource "google_container_node_pool" "coder_control_plane" {
     machine_type = var.node_size
 
     # Google recommends custom service accounts that have cloud-platform scope and permissions granted via IAM Roles.
-    service_account = google_service_account.sa[0].email
+    service_account = google_service_account.sa.email
     oauth_scopes = [
       "https://www.googleapis.com/auth/cloud-platform"
     ]
@@ -138,28 +133,28 @@ data "google_client_config" "current" {}
 provider "helm" {
   alias = "gcp_cluster"
   kubernetes {
-    host                   = try(google_container_cluster.coder[0].endpoint, "")
+    host                   = try(google_container_cluster.coder.endpoint, "")
     token                  = data.google_client_config.current.access_token
-    client_key             = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_key), "")
-    client_certificate     = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_certificate), "")
-    cluster_ca_certificate = try(base64decode(google_container_cluster.coder[0].master_auth[0].cluster_ca_certificate), "")
+    client_key             = try(base64decode(google_container_cluster.coder.master_auth[0].client_key), "")
+    client_certificate     = try(base64decode(google_container_cluster.coder.master_auth[0].client_certificate), "")
+    cluster_ca_certificate = try(base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate), "")
   }
 }
 provider "kubernetes" {
   alias                  = "gcp_cluster"
-  host                   = try("https://${google_container_cluster.coder[0].endpoint}", "")
+  host                   = try("https://${google_container_cluster.coder.endpoint}", "")
   token                  = data.google_client_config.current.access_token
-  client_key             = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_key), "")
-  client_certificate     = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_certificate), "")
-  cluster_ca_certificate = try(base64decode(google_container_cluster.coder[0].master_auth[0].cluster_ca_certificate), "")
+  client_key             = try(base64decode(google_container_cluster.coder.master_auth[0].client_key), "")
+  client_certificate     = try(base64decode(google_container_cluster.coder.master_auth[0].client_certificate), "")
+  cluster_ca_certificate = try(base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate), "")
 }
 provider "kubectl" {
   alias                  = "gcp_cluster"
-  host                   = try("https://${google_container_cluster.coder[0].endpoint}", "")
+  host                   = try("https://${google_container_cluster.coder.endpoint}", "")
   token                  = data.google_client_config.current.access_token
-  client_key             = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_key), "")
-  client_certificate     = try(base64decode(google_container_cluster.coder[0].master_auth[0].client_certificate), "")
-  cluster_ca_certificate = try(base64decode(google_container_cluster.coder[0].master_auth[0].cluster_ca_certificate), "")
+  client_key             = try(base64decode(google_container_cluster.coder.master_auth[0].client_key), "")
+  client_certificate     = try(base64decode(google_container_cluster.coder.master_auth[0].client_certificate), "")
+  cluster_ca_certificate = try(base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate), "")
   load_config_file       = false
 }
 
@@ -180,7 +175,7 @@ resource "kubernetes_secret" "clouddns-serviceaccount" {
     namespace = "cert-manager"
   }
   data = {
-    private_key = base64decode(google_service_account_key.key[0].private_key)
+    private_key = base64decode(google_service_account_key.key.private_key)
   }
   type       = "Opaque"
   depends_on = [kubernetes_namespace.cert-manager]
@@ -383,11 +378,11 @@ output "coder_url" {
 
 output "cluster_info" {
   value = try({
-    host                   = "https://${google_container_cluster.coder[0].endpoint}"
+    host                   = "https://${google_container_cluster.coder.endpoint}"
     token                  = data.google_client_config.current.access_token
-    client_key             = base64decode(google_container_cluster.coder[0].master_auth[0].client_key)
-    client_certificate     = base64decode(google_container_cluster.coder[0].master_auth[0].client_certificate)
-    cluster_ca_certificate = base64decode(google_container_cluster.coder[0].master_auth[0].cluster_ca_certificate)
+    client_key             = base64decode(google_container_cluster.coder.master_auth[0].client_key)
+    client_certificate     = base64decode(google_container_cluster.coder.master_auth[0].client_certificate)
+    cluster_ca_certificate = base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate)
   }, {})
   sensitive = true
 }

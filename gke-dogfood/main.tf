@@ -172,7 +172,7 @@ resource "coder_metadata" "info" {
   }
   item {
     key   = "GCP Console URL"
-    value = "https://console.cloud.google.com/kubernetes/clusters/details/us-central1-a/${data.coder_workspace.me.name}"
+    value = "https://console.cloud.google.com/kubernetes/clusters/details/us-central1-a/${data.coder_workspace.me.name}${data.coder_workspace.me.owner}"
   }
 }
 
