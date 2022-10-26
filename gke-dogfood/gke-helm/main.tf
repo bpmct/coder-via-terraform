@@ -311,6 +311,8 @@ coder:
       value: "true"
     - name: CODER_TELEMETRY
       value: "false"
+    - CODER_TELEMETRY_ENABLE
+      value: "false"
     - name: CODER_PG_CONNECTION_URL
       value: "postgres://coder:coder@coder-db-postgresql.default.svc.cluster.local:5432/coder?sslmode=disable"
   serviceAccount:
