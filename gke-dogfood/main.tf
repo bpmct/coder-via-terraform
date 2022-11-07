@@ -4,15 +4,7 @@ terraform {
       source  = "coder/coder"
       version = "0.5.3"
     }
-    docker = {
-      source  = "kreuzwerker/docker"
-      version = "~> 2.22.0"
-    }
   }
-}
-
-provider "docker" {
-  host = "unix:///var/run/dogfood-docker.sock"
 }
 
 provider "coder" {
@@ -33,29 +25,42 @@ variable "provisioner_daemons_per_replica" {
   default = "25"
 }
 
+variable "cluster_type" {
+  description = <<EOF
+  virtual: vcluster + dedicated node pool | gke: complete cluster ($72/mo)
+  EOF
+
+  default = "virtual"
+
+  validation {
+    condition     = contains(["virtual", "gke"], var.cluster_type)
+    error_message = "Must be one of following: virtual, gke."
+  }
+
+}
 
 module "coder_cluster" {
   source = "./gke-helm"
   status = data.coder_workspace.me.start_count
 
-
-  gcp_credentials                 = "/home/coder/ben-credentials.json"
-  gcp_project_id                  = "coder-devrel"
+  gcp_project_id                  = "coder-dogfood"
   email                           = "me@bpmct.net"
   dns_zone_name                   = "environments"
   root_domain                     = "environments.bpmct.net"
-  node_size                       = var.node_size
-  cluster_name                    = "${data.coder_workspace.me.name}${data.coder_workspace.me.owner}"
   replicas                        = var.replicas
   provisioner_daemons_per_replica = var.provisioner_daemons_per_replica
+
+  cluster_type    = var.cluster_type
+  cluster_name    = "${data.coder_workspace.me.name}${data.coder_workspace.me.owner}"
+  node_size       = var.node_size
+  vcluster_parent = "master"
 }
 
 provider "kubernetes" {
-  host                   = try(module.coder_cluster.cluster_info.host, "")
-  token                  = try(module.coder_cluster.cluster_info.token, "")
-  client_key             = try(module.coder_cluster.cluster_info.client_key, "")
-  client_certificate     = try(module.coder_cluster.cluster_info.client_certificate, "")
-  cluster_ca_certificate = try(module.coder_cluster.cluster_info.cluster_ca_certificate, "")
+  host                   = module.coder_cluster.cluster_info.host
+  client_key             = module.coder_cluster.cluster_info.client_key
+  client_certificate     = module.coder_cluster.cluster_info.client_certificate
+  cluster_ca_certificate = module.coder_cluster.cluster_info.cluster_ca_certificate
 }
 
 resource "coder_agent" "dev" {
@@ -69,6 +74,26 @@ resource "coder_agent" "dev" {
     code-server --auth none --port 13337 &
     sudo service docker start
     if [ -f ~/personalize ]; then ~/personalize 2>&1 | tee  ~/.personalize.log; fi
+
+    # -- Helm --
+    mkdir ~/helm && cd ~/helm
+    
+    mkdir ~/helm/coder && cd ~/helm/coder
+    helm repo add coder-v2 https://helm.coder.com/v2
+    helm get values coder > values.yaml
+    echo "helm upgrade coder v2/coder -f values.yaml" > update.sh
+
+    mkdir ~/helm/postgres && cd ~/helm/postgres
+    helm repo add bitnami https://charts.bitnami.com/bitnami
+    helm get values coder-db > values.yaml
+    echo "helm upgrade coder-db bitnami/postgresql -f values.yaml" > update.sh
+    chmod +x update.sh
+    echo "helm upgrade coder-db bitnami/postgresql -f values.yaml --set primary.extendedConfiguration='max_connections=1000' && helm get values coder-db > values.yaml" > increase-max-connections.sh
+    chmod +x increase-max-connections.sh
+
+    # -- Load tests --
+    mkdir ~/load-tests && cd ~/load-tests
+    git clone https://github.com/coder/loadscripts
     EOF
 }
 
@@ -192,3 +217,7 @@ resource "kubernetes_persistent_volume_claim" "home-directory" {
   }
 }
 
+output "kubeconfig" {
+  value     = module.coder_cluster.kubeconfig
+  sensitive = true
+}

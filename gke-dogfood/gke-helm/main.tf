@@ -19,9 +19,6 @@ variable "gcp_project_id" {
 variable "node_size" {
   sensitive = true
 }
-variable "gcp_credentials" {
-  sensitive = true
-}
 variable "email" {
   sensitive = true
 }
@@ -32,6 +29,11 @@ variable "root_domain" {
 }
 variable "cluster_name" {
 }
+variable "cluster_type" {
+  default = "virtual"
+}
+variable "vcluster_parent" {
+}
 variable "status" {
   default = 1
 }
@@ -41,25 +43,21 @@ variable "replicas" {
 variable "provisioner_daemons_per_replica" {
   default = "25"
 }
-
 provider "google" {
-  project     = var.gcp_project_id
-  credentials = var.gcp_credentials
-  region      = "us-central1"
-  zone        = "us-central1-a"
+  project = var.gcp_project_id
+  region  = "us-central1"
+  zone    = "us-central1-a"
 }
-
 provider "google-beta" {
-  project     = var.gcp_project_id
-  credentials = var.gcp_credentials
-  region      = "us-central1"
-  zone        = "us-central1-a"
+  project = var.gcp_project_id
+  region  = "us-central1"
+  zone    = "us-central1-a"
 }
 
 resource "google_service_account" "sa" {
   provider     = google-beta
   project      = var.gcp_project_id
-  account_id   = "coder-${var.cluster_name}"
+  account_id   = "coder-${var.cluster_name}-sa"
   display_name = "Coder ${var.cluster_name}"
 }
 resource "google_project_iam_custom_role" "dns" {
@@ -92,6 +90,10 @@ resource "google_service_account_key" "key" {
 }
 
 resource "google_container_cluster" "coder" {
+
+  # Create an actual cluster depending on cluster_type
+  count = var.cluster_type == "gke" ? 1 : 0
+
   provider = google-beta
   name     = var.cluster_name
   location = "us-central1-a"
@@ -109,16 +111,32 @@ resource "google_container_cluster" "coder" {
 }
 
 resource "google_container_node_pool" "coder_control_plane" {
-  count      = var.status
-  provider   = google-beta
-  name       = "coder-control-plane"
-  location   = "us-central1-a"
-  cluster    = google_container_cluster.coder.name
-  node_count = 1
+  count    = var.status
+  provider = google-beta
+  name     = local.nodepool_name
+  location = "us-central1-a"
+  cluster  = var.cluster_type == "virtual" ? var.vcluster_parent : google_container_cluster.coder[0].name
+
+  autoscaling {
+    min_node_count = 0
+    max_node_count = 3
+  }
 
   node_config {
     preemptible  = false
     machine_type = var.node_size
+
+    dynamic "taint" {
+      for_each = var.cluster_type == "virtual" ? [1] : []
+      content {
+        key    = "cluster-name"
+        value  = var.cluster_name
+        effect = "NO_EXECUTE"
+      }
+    }
+    labels = {
+      cluster-name = var.cluster_name
+    }
 
     # Google recommends custom service accounts that have cloud-platform scope and permissions granted via IAM Roles.
     service_account = google_service_account.sa.email
@@ -128,40 +146,178 @@ resource "google_container_node_pool" "coder_control_plane" {
   }
 }
 
+locals {
+  # virtual: Use the kubeconfig from the host 
+  kubeconfig_path = var.cluster_type == "virtual" ? "~/.kube/config" : null
+
+  # gke: Use data from our newly created cluster
+  host                   = var.cluster_type == "gke" ? "https://${google_container_cluster.coder[0].endpoint}" : null
+  token                  = var.cluster_type == "gke" ? data.google_client_config.current.access_token : null
+  client_key             = var.cluster_type == "gke" ? base64decode(google_container_cluster.coder[0].master_auth[0].client_key) : null
+  client_certificate     = var.cluster_type == "gke" ? base64decode(google_container_cluster.coder[0].master_auth[0].client_certificate) : null
+  cluster_ca_certificate = var.cluster_type == "gke" ? base64decode(google_container_cluster.coder[0].master_auth[0].cluster_ca_certificate) : null
+
+  nodepool_name = var.cluster_type == "virtual" ? "vcluster-${var.cluster_name}" : "coder"
+}
+
 data "google_client_config" "current" {}
 
 provider "helm" {
-  alias = "gcp_cluster"
+  alias = "main_cluster"
   kubernetes {
-    host                   = try(google_container_cluster.coder.endpoint, "")
-    token                  = data.google_client_config.current.access_token
-    client_key             = try(base64decode(google_container_cluster.coder.master_auth[0].client_key), "")
-    client_certificate     = try(base64decode(google_container_cluster.coder.master_auth[0].client_certificate), "")
-    cluster_ca_certificate = try(base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate), "")
+    config_path            = local.kubeconfig_path
+    host                   = local.host
+    token                  = local.token
+    client_key             = local.client_key
+    client_certificate     = local.client_certificate
+    cluster_ca_certificate = local.cluster_ca_certificate
   }
 }
+
 provider "kubernetes" {
-  alias                  = "gcp_cluster"
-  host                   = try("https://${google_container_cluster.coder.endpoint}", "")
-  token                  = data.google_client_config.current.access_token
-  client_key             = try(base64decode(google_container_cluster.coder.master_auth[0].client_key), "")
-  client_certificate     = try(base64decode(google_container_cluster.coder.master_auth[0].client_certificate), "")
-  cluster_ca_certificate = try(base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate), "")
+  config_path            = local.kubeconfig_path
+  alias                  = "main_cluster"
+  host                   = local.host
+  token                  = local.token
+  client_key             = local.client_key
+  client_certificate     = local.client_certificate
+  cluster_ca_certificate = local.cluster_ca_certificate
+}
+
+resource "kubernetes_namespace" "cluster_namespace" {
+  provider = kubernetes.main_cluster
+  count    = var.status
+  metadata {
+    name = var.cluster_type == "virtual" ? "vcluster-${var.cluster_name}" : "coder"
+  }
+  depends_on = [
+    google_container_node_pool.coder_control_plane
+  ]
+}
+
+resource "helm_release" "vcluster" {
+
+  # Do not use a vcluster if we are making
+  # a physical cluster
+  count = var.cluster_type == "virtual" && var.status == 1 ? 1 : 0
+
+  provider   = helm.main_cluster
+  repository = "https://charts.loft.sh"
+  name       = var.cluster_name
+  namespace  = kubernetes_namespace.cluster_namespace[0].metadata[0].name
+  chart      = "vcluster"
+  wait       = true
+  values = [<<EOF
+vcluster:
+  image: rancher/k3s:v1.23.5-k3s1   
+service:
+  type: LoadBalancer
+sync:
+  nodes:
+    enabled: true
+    nodeSelector: "cluster-name=${var.cluster_name}"
+syncer:
+  extraArgs:
+  - --enforce-toleration=cluster-name=${var.cluster_name}:NoExecute
+EOF
+  ]
+}
+
+resource "time_sleep" "wait_for_vcluster" {
+
+  # Do not use a vcluster if we are making
+  # a physical cluster
+  count = var.cluster_type == "virtual" && var.status == 1 ? 1 : 0
+
+  create_duration = "60s"
+  depends_on      = [helm_release.vcluster]
+}
+
+data "kubernetes_secret" "kubeconfig" {
+  provider = kubernetes.main_cluster
+
+  # Do not use a vcluster if we are making
+  # a physical cluster
+  count = var.cluster_type == "virtual" && var.status == 1 ? 1 : 0
+
+  metadata {
+    name      = "vc-${var.cluster_name}"
+    namespace = kubernetes_namespace.cluster_namespace[0].metadata[0].name
+  }
+  depends_on = [time_sleep.wait_for_vcluster]
+}
+
+data "kubernetes_service" "cluster_host" {
+
+  # Do not use a vcluster if we are making
+  # a physical cluster
+  count = var.cluster_type == "virtual" && var.status == 1 ? 1 : 0
+
+  provider = kubernetes.main_cluster
+  metadata {
+    name      = var.cluster_name
+    namespace = kubernetes_namespace.cluster_namespace[0].metadata[0].name
+  }
+  depends_on = [time_sleep.wait_for_vcluster]
+}
+
+locals {
+  data_cluster_host                   = var.cluster_type == "gke" ? local.host : try("https://${data.kubernetes_service.cluster_host[0].status.0.load_balancer.0.ingress.0.ip}", "")
+  data_cluster_client_key             = var.cluster_type == "gke" ? local.client_key : try(data.kubernetes_secret.kubeconfig[0].data.client-key, "")
+  data_cluster_token                  = var.cluster_type == "gke" ? local.token : null
+  data_cluster_client_certificate     = var.cluster_type == "gke" ? local.client_certificate : try(data.kubernetes_secret.kubeconfig[0].data.client-certificate, "")
+  data_cluster_cluster_ca_certificate = var.cluster_type == "gke" ? local.cluster_ca_certificate : try(data.kubernetes_secret.kubeconfig[0].data.certificate-authority, "")
+}
+
+# Use the vcluster
+provider "kubernetes" {
+  alias                  = "data_cluster"
+  host                   = local.data_cluster_host
+  token                  = local.data_cluster_token
+  client_certificate     = local.data_cluster_client_certificate
+  client_key             = local.data_cluster_client_key
+  cluster_ca_certificate = local.data_cluster_cluster_ca_certificate
 }
 provider "kubectl" {
-  alias                  = "gcp_cluster"
-  host                   = try("https://${google_container_cluster.coder.endpoint}", "")
-  token                  = data.google_client_config.current.access_token
-  client_key             = try(base64decode(google_container_cluster.coder.master_auth[0].client_key), "")
-  client_certificate     = try(base64decode(google_container_cluster.coder.master_auth[0].client_certificate), "")
-  cluster_ca_certificate = try(base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate), "")
+  alias                  = "data_cluster"
+  host                   = local.data_cluster_host
+  token                  = local.data_cluster_token
+  client_certificate     = local.data_cluster_client_certificate
+  client_key             = local.data_cluster_client_key
+  cluster_ca_certificate = local.data_cluster_cluster_ca_certificate
   load_config_file       = false
+}
+provider "helm" {
+  alias = "data_cluster"
+  kubernetes {
+    host                   = local.data_cluster_host
+    token                  = local.data_cluster_token
+    client_certificate     = local.data_cluster_client_certificate
+    client_key             = local.data_cluster_client_key
+    cluster_ca_certificate = local.data_cluster_cluster_ca_certificate
+  }
+}
+
+output "kubeconfig" {
+  value     = var.cluster_type == "virtual" ? try(replace(data.kubernetes_secret.kubeconfig[0].data.config, "https://localhost:8443", "https://${data.kubernetes_service.cluster_host[0].status.0.load_balancer.0.ingress.0.ip}"), "") : "N/a"
+  sensitive = true
+}
+
+output "cluster_info" {
+  value = try({
+    host                   = local.data_cluster_host
+    client_certificate     = local.data_cluster_client_certificate
+    client_key             = local.data_cluster_client_key
+    cluster_ca_certificate = local.data_cluster_cluster_ca_certificate
+  }, {})
+  sensitive = true
 }
 
 resource "kubernetes_namespace" "cert-manager" {
-  count = var.status
+  provider = kubernetes.data_cluster
+  count    = var.status
   metadata {
-    name = "cert-manager"
+    name = "${var.cluster_name}-cert-manager"
   }
   depends_on = [
     google_container_node_pool.coder_control_plane
@@ -169,10 +325,10 @@ resource "kubernetes_namespace" "cert-manager" {
 }
 resource "kubernetes_secret" "clouddns-serviceaccount" {
   count    = var.status
-  provider = kubernetes.gcp_cluster
+  provider = kubernetes.data_cluster
   metadata {
     name      = "clouddns-serviceaccount"
-    namespace = "cert-manager"
+    namespace = "${var.cluster_name}-cert-manager"
   }
   data = {
     private_key = base64decode(google_service_account_key.key.private_key)
@@ -182,12 +338,12 @@ resource "kubernetes_secret" "clouddns-serviceaccount" {
 }
 resource "helm_release" "cert-manager" {
   count    = var.status
-  provider = helm.gcp_cluster
+  provider = helm.data_cluster
   depends_on = [
     kubernetes_namespace.cert-manager
   ]
   name       = "cert-manager"
-  namespace  = "cert-manager"
+  namespace  = "${var.cluster_name}-cert-manager"
   repository = "https://charts.jetstack.io"
   chart      = "cert-manager"
   set {
@@ -197,7 +353,7 @@ resource "helm_release" "cert-manager" {
 }
 resource "helm_release" "postgres" {
   count      = var.status
-  provider   = helm.gcp_cluster
+  provider   = helm.data_cluster
   name       = "coder-db"
   repository = "https://charts.bitnami.com/bitnami"
   chart      = "postgresql"
@@ -219,7 +375,6 @@ resource "helm_release" "postgres" {
     value = "10Gi"
   }
   depends_on = [
-    google_container_cluster.coder,
     google_container_node_pool.coder_control_plane
   ]
 }
@@ -234,7 +389,7 @@ resource "time_sleep" "wait_for_certmanager" {
 
 resource "kubectl_manifest" "cluster_issuer" {
   count    = var.status
-  provider = kubectl.gcp_cluster
+  provider = kubectl.data_cluster
   depends_on = [
     time_sleep.wait_for_certmanager,
     kubernetes_secret.clouddns-serviceaccount
@@ -272,7 +427,7 @@ resource "time_sleep" "wait_for_clusterissuer" {
 
 resource "helm_release" "nginx-ingress" {
   count      = var.status
-  provider   = helm.gcp_cluster
+  provider   = helm.data_cluster
   name       = "nginx-ingress"
   repository = "https://kubernetes.github.io/ingress-nginx"
   chart      = "ingress-nginx"
@@ -284,7 +439,7 @@ resource "helm_release" "nginx-ingress" {
 
 resource "helm_release" "coder" {
   count    = var.status
-  provider = helm.gcp_cluster
+  provider = helm.data_cluster
   name     = "coder"
   chart    = "https://github.com/coder/coder/releases/download/v0.10.2/coder_helm_0.10.2.tgz"
 
@@ -301,8 +456,6 @@ coder:
       value: "true"
     - name: CODER_TEMPLATE_AUTOIMPORT
       value: "kubernetes"
-    - name: CODER_PROMETHEUS_ENABLE
-      value: "true"
     - name: CODER_PROMETHEUS_ADDRESS
       value: "127.0.0.1:2112" # default value, for visibility
     - name: CODER_PROVISIONER_DAEMONS
@@ -347,9 +500,9 @@ resource "time_sleep" "wait_for_ip" {
   create_duration = "60s"
 }
 
-# kubernetes_ingress_v1 does not seem to work
 data "kubernetes_ingress_v1" "coder" {
-  count = var.status
+  count    = var.status
+  provider = kubernetes.data_cluster
   metadata {
     name      = "coder"
     namespace = "default"
@@ -376,15 +529,4 @@ resource "google_dns_record_set" "cluster_subdomain" {
 
 output "coder_url" {
   value = "https://${var.cluster_name}.${var.root_domain}"
-}
-
-output "cluster_info" {
-  value = try({
-    host                   = "https://${google_container_cluster.coder.endpoint}"
-    token                  = data.google_client_config.current.access_token
-    client_key             = base64decode(google_container_cluster.coder.master_auth[0].client_key)
-    client_certificate     = base64decode(google_container_cluster.coder.master_auth[0].client_certificate)
-    cluster_ca_certificate = base64decode(google_container_cluster.coder.master_auth[0].cluster_ca_certificate)
-  }, {})
-  sensitive = true
 }
