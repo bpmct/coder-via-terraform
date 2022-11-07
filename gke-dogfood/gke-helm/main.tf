@@ -111,7 +111,8 @@ resource "google_container_cluster" "coder" {
 }
 
 resource "google_container_node_pool" "coder_control_plane" {
-  count    = var.status
+  count = var.cluster_type == "gke" ? var.status : 1
+
   provider = google-beta
   name     = local.nodepool_name
   location = "us-central1-a"
@@ -186,7 +187,7 @@ provider "kubernetes" {
 
 resource "kubernetes_namespace" "cluster_namespace" {
   provider = kubernetes.main_cluster
-  count    = var.status
+  count    = var.cluster_type == "virtual" ? 1 : var.status
   metadata {
     name = var.cluster_type == "virtual" ? "vcluster-${var.cluster_name}" : "coder"
   }
@@ -199,7 +200,7 @@ resource "helm_release" "vcluster" {
 
   # Do not use a vcluster if we are making
   # a physical cluster
-  count = var.cluster_type == "virtual" && var.status == 1 ? 1 : 0
+  count = var.cluster_type == "virtual" ? 1 : 0
 
   provider   = helm.main_cluster
   repository = "https://charts.loft.sh"
@@ -219,6 +220,7 @@ sync:
 syncer:
   extraArgs:
   - --enforce-toleration=cluster-name=${var.cluster_name}:NoExecute
+replicas: 1
 EOF
   ]
 }
@@ -227,7 +229,7 @@ resource "time_sleep" "wait_for_vcluster" {
 
   # Do not use a vcluster if we are making
   # a physical cluster
-  count = var.cluster_type == "virtual" && var.status == 1 ? 1 : 0
+  count = var.cluster_type == "virtual" ? 1 : 0
 
   create_duration = "60s"
   depends_on      = [helm_release.vcluster]
@@ -238,7 +240,7 @@ data "kubernetes_secret" "kubeconfig" {
 
   # Do not use a vcluster if we are making
   # a physical cluster
-  count = var.cluster_type == "virtual" && var.status == 1 ? 1 : 0
+  count = var.cluster_type == "virtual" ? 1 : 0
 
   metadata {
     name      = "vc-${var.cluster_name}"
@@ -251,7 +253,7 @@ data "kubernetes_service" "cluster_host" {
 
   # Do not use a vcluster if we are making
   # a physical cluster
-  count = var.cluster_type == "virtual" && var.status == 1 ? 1 : 0
+  count = var.cluster_type == "virtual" ? 1 : 0
 
   provider = kubernetes.main_cluster
   metadata {
@@ -315,7 +317,7 @@ output "cluster_info" {
 
 resource "kubernetes_namespace" "cert-manager" {
   provider = kubernetes.data_cluster
-  count    = var.status
+  count    = var.cluster_type == "virtual" ? 1 : var.status
   metadata {
     name = "${var.cluster_name}-cert-manager"
   }
@@ -324,7 +326,7 @@ resource "kubernetes_namespace" "cert-manager" {
   ]
 }
 resource "kubernetes_secret" "clouddns-serviceaccount" {
-  count    = var.status
+  count    = var.cluster_type == "virtual" ? 1 : var.status
   provider = kubernetes.data_cluster
   metadata {
     name      = "clouddns-serviceaccount"
@@ -337,7 +339,7 @@ resource "kubernetes_secret" "clouddns-serviceaccount" {
   depends_on = [kubernetes_namespace.cert-manager]
 }
 resource "helm_release" "cert-manager" {
-  count    = var.status
+  count    = var.cluster_type == "virtual" ? 1 : var.status
   provider = helm.data_cluster
   depends_on = [
     kubernetes_namespace.cert-manager
@@ -352,7 +354,7 @@ resource "helm_release" "cert-manager" {
   }
 }
 resource "helm_release" "postgres" {
-  count      = var.status
+  count      = var.cluster_type == "virtual" ? 1 : var.status
   provider   = helm.data_cluster
   name       = "coder-db"
   repository = "https://charts.bitnami.com/bitnami"
@@ -380,7 +382,7 @@ resource "helm_release" "postgres" {
 }
 
 resource "time_sleep" "wait_for_certmanager" {
-  count = var.status
+  count = var.cluster_type == "virtual" ? 1 : var.status
   depends_on = [
     helm_release.cert-manager
   ]
@@ -388,7 +390,7 @@ resource "time_sleep" "wait_for_certmanager" {
 }
 
 resource "kubectl_manifest" "cluster_issuer" {
-  count    = var.status
+  count    = var.cluster_type == "virtual" ? 1 : var.status
   provider = kubectl.data_cluster
   depends_on = [
     time_sleep.wait_for_certmanager,
@@ -417,7 +419,7 @@ spec:
 }
 
 resource "time_sleep" "wait_for_clusterissuer" {
-  count = var.status
+  count = var.cluster_type == "virtual" ? 1 : var.status
   depends_on = [
     kubectl_manifest.cluster_issuer,
     helm_release.postgres
@@ -426,7 +428,7 @@ resource "time_sleep" "wait_for_clusterissuer" {
 }
 
 resource "helm_release" "nginx-ingress" {
-  count      = var.status
+  count      = var.cluster_type == "virtual" ? 1 : var.status
   provider   = helm.data_cluster
   name       = "nginx-ingress"
   repository = "https://kubernetes.github.io/ingress-nginx"
@@ -438,7 +440,7 @@ resource "helm_release" "nginx-ingress" {
 }
 
 resource "helm_release" "coder" {
-  count    = var.status
+  count    = var.cluster_type == "virtual" ? 1 : var.status
   provider = helm.data_cluster
   name     = "coder"
   chart    = "https://github.com/coder/coder/releases/download/v0.10.2/coder_helm_0.10.2.tgz"

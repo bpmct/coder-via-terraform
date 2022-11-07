@@ -42,6 +42,7 @@ variable "cluster_type" {
 module "coder_cluster" {
   source = "./gke-helm"
   status = data.coder_workspace.me.start_count
+  # status = 0
 
   gcp_project_id                  = "coder-dogfood"
   email                           = "me@bpmct.net"
